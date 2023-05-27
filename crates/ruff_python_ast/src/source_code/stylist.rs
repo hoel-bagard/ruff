@@ -94,6 +94,32 @@ fn detect_indention(tokens: &[LexResult], locator: &Locator) -> Indentation {
 
 /// The quotation style used in Python source code.
 #[derive(Debug, Default, PartialEq, Eq, Copy, Clone)]
+pub enum BlankLine {
+    Windows,
+    #[default]
+    Unix,
+}
+
+impl From<BlankLine> for String {
+    fn from(val: BlankLine) -> Self {
+        match val {
+            BlankLine::Windows => "\r\n",
+            BlankLine::Unix => "\n",
+        }
+    }
+}
+
+impl fmt::Display for BlankLine {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            BlankLine::Windows => write!(f, "\r\n"),
+            BlankLine::Unix => write!(f, "\n"),
+        }
+    }
+}
+
+/// The quotation style used in Python source code.
+#[derive(Debug, Default, PartialEq, Eq, Copy, Clone)]
 pub enum Quote {
     Single,
     #[default]
