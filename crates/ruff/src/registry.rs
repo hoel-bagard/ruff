@@ -340,6 +340,7 @@ impl Rule {
             | Rule::UnexpectedIndentation
             | Rule::UnexpectedIndentationComment
             | Rule::UnexpectedSpacesAroundKeywordParameterEquals
+            | Rule::MissingIndentation
             | Rule::WhitespaceAfterOpenBracket
             | Rule::WhitespaceBeforeCloseBracket
             | Rule::WhitespaceBeforeParameters

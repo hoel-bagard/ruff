@@ -1,3 +1,4 @@
+pub(crate) use continuation_line_missing_indentation::*;
 pub(crate) use extraneous_whitespace::*;
 pub(crate) use indentation::*;
 pub(crate) use missing_whitespace::*;
@@ -20,6 +21,7 @@ use ruff_python_ast::source_code::Locator;
 use ruff_python_ast::token_kind::TokenKind;
 use ruff_python_whitespace::is_python_whitespace;
 
+mod continuation_line_missing_indentation;
 mod extraneous_whitespace;
 mod indentation;
 mod missing_whitespace;
