@@ -14,7 +14,7 @@ use crate::checkers::logical_lines::LogicalLinesContext;
 use super::LogicalLine;
 
 /// Contains variables used for the linting of blank lines.
-#[derive(Default)]
+#[derive(Default, Debug)]
 #[allow(clippy::struct_excessive_bools)]
 pub(crate) struct BlankLinesTrackingVars {
     follows_decorator: bool,
@@ -321,16 +321,24 @@ pub(crate) fn blank_lines(
     stylist: &Stylist,
     context: &mut LogicalLinesContext,
 ) {
-    if indent_level <= tracked_vars.class_indent_level {
-        tracked_vars.is_in_class = false;
-    }
-
-    if indent_level <= tracked_vars.fn_indent_level {
-        tracked_vars.is_in_fn = false;
-    }
+    // if line.line.tokens_start == 0 {
+    //     dbg!(&line);
+    // }
+    // dbg!(&indent_level);
+    // dbg!(&tracked_vars);
+    // dbg!(line.text());
+    // if prev_line.is_some() {
+    //     dbg!(prev_line.expect("a").text());
+    // }
 
     for (token_idx, token) in line.tokens().iter().enumerate() {
-        if token.kind() == TokenKind::Def
+        if token_idx == 0 && token.kind() == TokenKind::Comment {
+            dbg!("BREAK");
+            break;
+        }
+
+        if line.tokens_trimmed().len() == 0 {
+        } else if token.kind() == TokenKind::Def
             && tracked_vars.is_in_class
             && line.line.preceding_blank_lines == 0
             && !tracked_vars.follows_decorator
@@ -362,8 +370,11 @@ pub(crate) fn blank_lines(
             && prev_line
                 .and_then(|prev_line| prev_line.tokens_trimmed().first())
                 .map_or(false, |token| !matches!(token.kind(), TokenKind::Except))
+            && prev_line
+                .and_then(|prev_line| prev_line.tokens().first())
+                .map_or(false, |token| !matches!(token.kind(), TokenKind::Comment))
             && line.line.preceding_blank_lines < 2
-            && prev_line.is_some()
+        // && prev_line.is_some()
         {
             // E302
             let mut diagnostic = Diagnostic::new(
@@ -413,6 +424,10 @@ pub(crate) fn blank_lines(
             context.push_diagnostic(diagnostic);
         } else if line.line.preceding_blank_lines < 2
             && (tracked_vars.is_in_fn || tracked_vars.is_in_class)
+            && !matches!(
+                token.kind(),
+                TokenKind::Comment | TokenKind::Def | TokenKind::Class
+            )
             && indent_level == 0
         {
             // E305
@@ -446,6 +461,14 @@ pub(crate) fn blank_lines(
             context.push_diagnostic(diagnostic);
         }
 
+        if indent_level <= tracked_vars.class_indent_level {
+            tracked_vars.is_in_class = false;
+        }
+
+        if indent_level <= tracked_vars.fn_indent_level {
+            tracked_vars.is_in_fn = false;
+        }
+
         match token.kind() {
             TokenKind::Class => {
                 if !tracked_vars.is_in_class {
@@ -462,10 +485,16 @@ pub(crate) fn blank_lines(
                 break;
             }
             TokenKind::Def => {
-                if !tracked_vars.is_in_fn {
-                    tracked_vars.fn_indent_level = indent_level;
+                if line
+                    .tokens_trimmed()
+                    .last()
+                    .map_or(false, |token| matches!(token.kind(), TokenKind::Colon))
+                {
+                    if !tracked_vars.is_in_fn {
+                        tracked_vars.fn_indent_level = indent_level;
+                    }
+                    tracked_vars.is_in_fn = true;
                 }
-                tracked_vars.is_in_fn = true;
                 tracked_vars.follows_def = true;
                 tracked_vars.follows_decorator = false;
                 break;

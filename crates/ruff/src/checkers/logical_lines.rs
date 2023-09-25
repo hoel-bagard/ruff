@@ -51,6 +51,7 @@ pub(crate) fn check_logical_lines(
         settings.rules.should_fix(Rule::WhitespaceBeforePunctuation);
 
     let mut blank_lines_tracking_vars = BlankLinesTrackingVars::default();
+    let mut prev_line_including_comments = None;
     let mut prev_line = None;
     let mut prev_indent_level = None;
     let indent_char = stylist.indentation().as_char();
@@ -123,7 +124,7 @@ pub(crate) fn check_logical_lines(
 
         blank_lines(
             &line,
-            prev_line.as_ref(),
+            prev_line_including_comments.as_ref(),
             &mut blank_lines_tracking_vars,
             indent_level,
             locator,
@@ -131,6 +132,7 @@ pub(crate) fn check_logical_lines(
             &mut context,
         );
 
+        prev_line_including_comments = Some(line.clone());
         if !line.is_comment_only() {
             prev_line = Some(line);
             prev_indent_level = Some(indent_level);
