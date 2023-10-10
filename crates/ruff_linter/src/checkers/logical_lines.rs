@@ -113,6 +113,7 @@ pub(crate) fn check_logical_lines(
         continuation_line_missing_indentation_or_outdented(
             &mut context,
             &line,
+            locator,
             indent_char,
             indent_size,
         );
