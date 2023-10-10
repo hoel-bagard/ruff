@@ -33,18 +33,15 @@ impl Violation for MissingOrOutdentedIndentation {
     }
 }
 
-fn is_new_physical_line(token: &LogicalLineToken, locator: &Locator) -> bool {
-    let token_text = locator.slice(token.range);
-
-    dbg!(&token_text);
-    matches!(token.kind, TokenKind::NonLogicalNewline) || token_text.ends_with("\\\n")
-}
-
-fn get_physical_lines(logical_line: &LogicalLine, locator: &Locator) -> Vec<usize> {
+fn get_continuation_indices(logical_line: &LogicalLine, locator: &Locator) -> Vec<usize> {
     let mut non_logical_newlines_indices = Vec::new();
     let mut prev_end = TextSize::default();
     let mut prev_token: Option<&TokenKind> = None;
     for token in logical_line.tokens() {
+        if matches!(prev_token, Some(TokenKind::NonLogicalNewline)) {
+            non_logical_newlines_indices.push(token.range.start().into());
+        }
+
         let trivia = locator.slice(TextRange::new(prev_end, token.range.start()));
 
         // Get the trivia between the previous and the current token and detect any newlines.
@@ -72,15 +69,29 @@ fn get_physical_lines(logical_line: &LogicalLine, locator: &Locator) -> Vec<usiz
     non_logical_newlines_indices
 }
 
-fn line_indent(logical_line: &LogicalLine) -> u32 {
-    let mut nb_indents = 0;
-    for token in logical_line.tokens() {
-        if matches!(token.kind, TokenKind::Indent) {
-            nb_indents += 1;
+/// Because there is no Indent token for continuation lines.
+fn line_indent(
+    locator: &Locator,
+    indent_char: char,
+    indent_size: usize,
+    physical_line_start: TextSize,
+    first_token_start: TextSize,
+) -> usize {
+    let line_text = locator.slice(TextRange::new(physical_line_start, first_token_start));
+
+    // To remove any trailing 'indent'.
+    match line_text.lines().last() {
+        None => 0,
+        Some(line_text) => {
+            let nb_indent_char = line_text.chars().filter(|ch| ch == &indent_char).count();
+
+            if indent_char == '\t' {
+                nb_indent_char
+            } else {
+                nb_indent_char / indent_size
+            }
         }
     }
-
-    nb_indents
 }
 
 /// E122
@@ -92,11 +103,11 @@ pub(crate) fn continuation_line_missing_indentation_or_outdented(
     indent_size: usize,
 ) {
     // dbg!(&logical_line);
-    let non_logical_newlines_indices = get_physical_lines(logical_line, locator);
-    let nb_physical_lines = non_logical_newlines_indices.len();
+    let continuation_indices = get_continuation_indices(logical_line, locator);
+    let nb_physical_lines = continuation_indices.len() + 1; // Plus 1 to count the last newline token / empty lines.
     dbg!(&logical_line.text());
     dbg!(nb_physical_lines);
-    dbg!(&non_logical_newlines_indices);
+    dbg!(&continuation_indices);
     if nb_physical_lines == 1 {
         return;
     }
@@ -119,20 +130,33 @@ pub(crate) fn continuation_line_missing_indentation_or_outdented(
     // hangs = [None]
     // # visual indents
     // indent_chances = {}
-    // last_indent = tokens[0][2]
+    let mut last_indent = line_indent(
+        locator,
+        indent_char,
+        indent_size,
+        0.into(),
+        logical_line.first_token().unwrap().range.start(),
+    );
     // visual_indent = None
     // last_token_multiline = False
     // # for each depth, memorize the visual indent column
     // indent = [last_indent[1]]
 
+    let mut prev_end = TextSize::default();
     for token in logical_line.tokens() {
         // this is the beginning of a continuation line.
-        dbg!(&token);
-        if is_new_physical_line(token, locator) {
-            dbg!(&token);
-            // Need to use only the physical line's token here.
-            // last_indent = line_indent(logical_line);
+        if continuation_indices.contains(&token.range.start().into()) {
+            last_indent = line_indent(
+                locator,
+                indent_char,
+                indent_size,
+                prev_end,
+                token.range.start(),
+            );
+            dbg!(&last_indent);
         }
+        dbg!(&token);
+        prev_end = token.range.end();
     }
 
     // let mut diagnostic = Diagnostic::new(
