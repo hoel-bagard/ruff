@@ -94,6 +94,32 @@ fn line_indent(
     }
 }
 
+/// Return the amount of indentation.
+/// Tabs are expanded to the next multiple of 8.
+fn expand_indent(line: &str) -> usize {
+    line.strip_suffix('\n');
+    // Remove trailing newline and carriage return characters. TODO: Why ?
+    let line = line.trim_end_matches(&['\n', '\r']);
+
+    if !line.contains('\t') {
+        // If there are no tabs in the line, return the leading space count
+        return line.len() - line.trim_start().len();
+    }
+    let mut indent = 0;
+
+    for ch in line.chars() {
+        if ch == '\t' {
+            indent = indent / 8 * 8 + 8;
+        } else if ch == ' ' {
+            indent += 1;
+        } else {
+            break;
+        }
+    }
+
+    indent
+}
+
 /// E122
 pub(crate) fn continuation_line_missing_indentation_or_outdented(
     context: &mut LogicalLinesContext,
@@ -111,6 +137,15 @@ pub(crate) fn continuation_line_missing_indentation_or_outdented(
     if nb_physical_lines == 1 {
         return;
     }
+
+    // Indent of the first physical line.
+    let indent_level = line_indent(
+        locator,
+        indent_char,
+        indent_size,
+        logical_line.first_token().unwrap().range.start(),
+        logical_line.first_token().unwrap().range.end(),
+    );
 
     // indent_next tells us whether the next block is indented.
     // Assuming that it is indented by 4 spaces, then we should not allow 4-space
@@ -130,13 +165,7 @@ pub(crate) fn continuation_line_missing_indentation_or_outdented(
     // hangs = [None]
     // # visual indents
     // indent_chances = {}
-    let mut last_indent = line_indent(
-        locator,
-        indent_char,
-        indent_size,
-        0.into(),
-        logical_line.first_token().unwrap().range.start(),
-    );
+    let mut last_indent = indent_level;
     // visual_indent = None
     // last_token_multiline = False
     // # for each depth, memorize the visual indent column
@@ -146,14 +175,18 @@ pub(crate) fn continuation_line_missing_indentation_or_outdented(
     for token in logical_line.tokens() {
         // this is the beginning of a continuation line.
         if continuation_indices.contains(&token.range.start().into()) {
-            last_indent = line_indent(
-                locator,
-                indent_char,
-                indent_size,
-                prev_end,
-                token.range.start(),
-            );
-            dbg!(&last_indent);
+            // record the initial indent.
+            let physical_line_start = locator.slice(TextRange::new(prev_end, token.range.start()));
+            rel_indent[row] = expand_indent(physical_line_start) - indent_level;
+
+            // last_indent = line_indent(
+            //     locator,
+            //     indent_char,
+            //     indent_size,
+            //     prev_end,
+            //     token.range.start(),
+            // );
+            // dbg!(&last_indent);
         }
         dbg!(&token);
         prev_end = token.range.end();
