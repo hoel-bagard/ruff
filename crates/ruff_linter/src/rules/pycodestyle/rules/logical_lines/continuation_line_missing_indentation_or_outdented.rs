@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use super::{LogicalLine, LogicalLineToken};
 use crate::checkers::logical_lines::LogicalLinesContext;
 use ruff_diagnostics::Violation;
@@ -5,6 +7,7 @@ use ruff_macros::{derive_message_formats, violation};
 use ruff_python_parser::{Tok, TokenKind};
 use ruff_source_file::Locator;
 use ruff_text_size::{TextRange, TextSize};
+use rustc_hash::FxHashMap;
 
 /// ## What it does
 /// Checks for continuation lines not indented as far as they should be or indented too far.
@@ -132,6 +135,7 @@ pub(crate) fn continuation_line_missing_indentation_or_outdented(
     let continuation_indices = get_continuation_indices(logical_line, locator);
     let nb_physical_lines = continuation_indices.len() + 1; // Plus 1 to count the last newline token / empty lines.
     dbg!(&logical_line.text());
+    dbg!(&logical_line.tokens());
     dbg!(nb_physical_lines);
     dbg!(&continuation_indices);
     if nb_physical_lines == 1 {
@@ -139,7 +143,7 @@ pub(crate) fn continuation_line_missing_indentation_or_outdented(
     }
 
     // Indent of the first physical line.
-    let indent_level = line_indent(
+    let start_indent_level = line_indent(
         locator,
         indent_char,
         indent_size,
@@ -160,25 +164,124 @@ pub(crate) fn continuation_line_missing_indentation_or_outdented(
     // Relative indents of physical lines
     let mut rel_indent = vec![0; nb_physical_lines];
     // For each depth, collect a list of opening rows.
-    // open_rows = [[0]]
+    let mut open_rows = vec![vec![0]];
     // # for each depth, memorize the hanging indentation
-    // hangs = [None]
+    let mut hangs: Vec<Option<usize>> = Vec::new();
     // # visual indents
-    // indent_chances = {}
-    let mut last_indent = indent_level;
+    // let mut indent_chances: FxHashMap<usize, usize> = FxHashMap::default();
+    let mut indent_chances: Vec<usize> = Vec::new();
+    let mut last_indent = start_indent_level;
     // visual_indent = None
-    // last_token_multiline = False
+    let last_token_multiline = false;
     // # for each depth, memorize the visual indent column
     // indent = [last_indent[1]]
+    let mut indent = vec![last_indent];
 
+    // To be able to compute the line relative start of a token.
+    let mut physical_line_start = logical_line.tokens().first().unwrap().range.start();
     let mut prev_end = TextSize::default();
     for token in logical_line.tokens() {
+        // TODO: instead of creating continuation indices, create the start and end of pycodestyle, and then zip it
+        //       to the tokens iterator to get the start_physical_line_idx, end_physical_line_idx,
+        //       token_start_within_physical_line , token_end_within_physical_line.
+
         // this is the beginning of a continuation line.
         if continuation_indices.contains(&token.range.start().into()) {
             // record the initial indent.
-            let physical_line_start = locator.slice(TextRange::new(prev_end, token.range.start()));
-            rel_indent[row] = expand_indent(physical_line_start) - indent_level;
+            let physical_line_start_text =
+                locator.slice(TextRange::new(prev_end, token.range.start()));
+            let indent_level = expand_indent(physical_line_start_text);
+            rel_indent[row] = indent_level - start_indent_level;
+            physical_line_start = token.range.start() - TextSize::try_from(indent_level).unwrap();
+            // The start[1] from pycodestyle.
+            let token_start_within_physical_line = token.range.start() - physical_line_start;
+            dbg!(&token);
+            dbg!(token_start_within_physical_line);
 
+            let is_closing_bracket = matches!(
+                token.kind,
+                TokenKind::Rpar | TokenKind::Rsqb | TokenKind::Rbrace
+            );
+
+            let is_opening_bracket = matches!(
+                token.kind,
+                TokenKind::Lpar | TokenKind::Lsqb | TokenKind::Lbrace
+            );
+
+            if matches!(token.kind, TokenKind::Colon)
+                && matches!(
+                    logical_line.tokens().last().unwrap().kind,
+                    TokenKind::NonLogicalNewline
+                )
+            {
+                open_rows[depth].push(row);
+            }
+
+            // Is there any chance of visual indent?
+            // let visual_indent = !is_closing_bracket
+            //     && hang > 0
+            //     && indent_chances.contains(&token_start_within_physical_line);
+
+            if is_opening_bracket {
+                depth += 1;
+                indent.push(0);
+                hangs.push(None);
+                if open_rows.len() == depth {
+                    open_rows.push(Vec::new());
+                }
+                open_rows[depth].push(row);
+                parens[row] += 1;
+            } else if is_closing_bracket && depth > 0 {
+                // Parent indents should not be more than this one.
+                let prev_indent = if let Some(i) = indent.pop() {
+                    i
+                } else {
+                    last_indent
+                };
+                hangs.pop();
+                for d in 0..depth {
+                    if indent[d] > prev_indent {
+                        indent[d] = 0
+                    }
+                }
+                // for ind in indent
+            }
+
+            // # keep track of bracket depth
+            // if token_type == tokenize.OP:
+            //     if text in '([{':
+            //         depth += 1
+            //         indent.append(0)
+            //         hangs.append(None)
+            //         if len(open_rows) == depth:
+            //             open_rows.append([])
+            //         open_rows[depth].append(row)
+            //         parens[row] += 1
+            //         if verbose >= 4:
+            //             print("bracket depth %s seen, col %s, visual min = %s" %
+            //                   (depth, start[1], indent[depth]))
+            //     elif text in ')]}' and depth > 0:
+            //         # parent indents should not be more than this one
+            //         prev_indent = indent.pop() or last_indent[1]
+            //         hangs.pop()
+            //         for d in range(depth):
+            //             if indent[d] > prev_indent:
+            //                 indent[d] = 0
+            //         for ind in list(indent_chances):
+            //             if ind >= prev_indent:
+            //                 del indent_chances[ind]
+            //         del open_rows[depth + 1:]
+            //         depth -= 1
+            //         if depth:
+            //             indent_chances[indent[depth]] = True
+            //         for idx in range(row, -1, -1):
+            //             if parens[idx]:
+            //                 parens[idx] -= 1
+            //                 break
+            //     assert len(indent) == depth + 1
+            //     if start[1] not in indent_chances:
+            //         # allow lining up tokens
+            //         indent_chances[start[1]] = text
             // last_indent = line_indent(
             //     locator,
             //     indent_char,
@@ -187,8 +290,11 @@ pub(crate) fn continuation_line_missing_indentation_or_outdented(
             //     token.range.start(),
             // );
             // dbg!(&last_indent);
+
+            // last_token_multiline = (start[0] != end[0])
+            // if last_token_multiline:
+            //     rel_indent[end[0] - first_row] = rel_indent[row]
         }
-        dbg!(&token);
         prev_end = token.range.end();
     }
 
