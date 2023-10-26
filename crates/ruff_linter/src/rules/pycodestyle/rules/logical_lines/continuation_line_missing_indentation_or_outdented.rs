@@ -46,49 +46,46 @@ struct TokenInfo {
 
 // For each token, compute its start_physical_line_idx, end_physical_line_idx,
 // token_start_within_physical_line and token_end_within_physical_line the same way pycodestyle does.
-fn get_continuation_indices(logical_line: &LogicalLine, locator: &Locator) -> Vec<TokenInfo> {
+fn get_token_infos(logical_line: &LogicalLine, locator: &Locator) -> Vec<TokenInfo> {
     let mut token_infos = Vec::new();
     let mut current_line_idx: usize = 0;
-    let mut physical_line_start = TextSize::new(0);
-    let mut prev_end = TextSize::default();
-    let mut prev_token: Option<&TokenKind> = None;
+    // The first physical line occupied by the token, since a token can span multiple physical lines.
+    let mut first_physical_line_start = TextSize::new(0);
+    let mut current_physical_line_start: TextSize;
     for token in logical_line.tokens() {
         let start_physical_line_idx = current_line_idx;
-        if matches!(prev_token, Some(TokenKind::NonLogicalNewline)) {
+        current_physical_line_start = first_physical_line_start;
+        if matches!(
+            token.kind,
+            TokenKind::NonLogicalNewline | TokenKind::Newline
+        ) {
+            token_infos.push(TokenInfo {
+                start_physical_line_idx,
+                end_physical_line_idx: current_line_idx,
+                token_start_within_physical_line: token.range.start() - first_physical_line_start,
+                token_end_within_physical_line: token.range.end() - first_physical_line_start,
+            });
+
             current_line_idx += 1;
-            physical_line_start = token.range.end();
+            first_physical_line_start = token.range.end();
+            continue;
         }
 
-        let trivia = locator.slice(TextRange::new(prev_end, token.range.start()));
-
-        // Get the trivia between the previous and the current token and detect any newlines.
-        // This is necessary because `RustPython` doesn't emit `[Tok::Newline]` tokens
-        // between any two tokens that form a continuation. That's why we have to extract the
-        // newlines "manually".
-        for (index, text) in trivia.match_indices(['\n', '\r']) {
-            if text == "\r" && trivia.as_bytes().get(index + 1) == Some(&b'\n') {
-                continue;
-            }
-            // Newlines after a newline never form a continuation.
-            if !matches!(
-                prev_token,
-                Some(TokenKind::Newline | TokenKind::NonLogicalNewline)
-            ) && prev_token.is_some()
-            {
-                current_line_idx += 1;
-                physical_line_start = token.range.start() + TextSize::try_from(index).unwrap();
-            }
+        // Look for newlines within strings.
+        let trivia = locator.slice(TextRange::new(token.range.start(), token.range.end()));
+        for (index, _text) in trivia.match_indices('\n') {
+            current_line_idx += 1;
+            current_physical_line_start =
+                token.range.start() + TextSize::try_from(index + 1).unwrap();
         }
 
         token_infos.push(TokenInfo {
             start_physical_line_idx,
             end_physical_line_idx: current_line_idx,
-            token_start_within_physical_line: token.range.start() - physical_line_start,
-            token_end_within_physical_line: token.range.end() - physical_line_start,
+            token_start_within_physical_line: token.range.start() - first_physical_line_start,
+            token_end_within_physical_line: token.range.end() - current_physical_line_start,
         });
-
-        prev_token = Some(&token.kind);
-        prev_end = token.range.end();
+        first_physical_line_start = current_physical_line_start;
     }
 
     token_infos
@@ -154,15 +151,17 @@ pub(crate) fn continuation_line_missing_indentation_or_outdented(
     indent_size: usize,
 ) {
     // dbg!(&logical_line);
-    let continuation_indices = get_continuation_indices(logical_line, locator);
-    let nb_physical_lines = continuation_indices.len() + 1; // Plus 1 to count the last newline token / empty lines.
+    let token_infos = get_token_infos(logical_line, locator);
+    // let nb_physical_lines = token_infos.last().unwrap().end_physical_line_idx + 1; // Plus 1 to count the last newline token / empty lines.
+    let nb_physical_lines = 1;
     dbg!(&logical_line.text());
-    dbg!(&logical_line.tokens());
-    dbg!(nb_physical_lines);
-    dbg!(&continuation_indices);
+    // dbg!(&logical_line.tokens());
+    // dbg!(nb_physical_lines);
+    dbg!(&token_infos);
     if nb_physical_lines == 1 {
         return;
     }
+    return;
 
     // Indent of the first physical line.
     let start_indent_level = line_indent(
@@ -210,7 +209,8 @@ pub(crate) fn continuation_line_missing_indentation_or_outdented(
         // }
 
         // this is the beginning of a continuation line.
-        if continuation_indices.contains(&token.range.start().into()) {
+        // if continuation_indices.contains(&token.range.start().into()) {
+        if true {
             // record the initial indent.
             let physical_line_start_text =
                 locator.slice(TextRange::new(prev_end, token.range.start()));
