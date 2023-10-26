@@ -36,13 +36,27 @@ impl Violation for MissingOrOutdentedIndentation {
     }
 }
 
-fn get_continuation_indices(logical_line: &LogicalLine, locator: &Locator) -> Vec<usize> {
-    let mut non_logical_newlines_indices = Vec::new();
+#[derive(Debug)]
+struct TokenInfo {
+    start_physical_line_idx: usize,
+    end_physical_line_idx: usize,
+    token_start_within_physical_line: TextSize,
+    token_end_within_physical_line: TextSize,
+}
+
+// For each token, compute its start_physical_line_idx, end_physical_line_idx,
+// token_start_within_physical_line and token_end_within_physical_line the same way pycodestyle does.
+fn get_continuation_indices(logical_line: &LogicalLine, locator: &Locator) -> Vec<TokenInfo> {
+    let mut token_infos = Vec::new();
+    let mut current_line_idx: usize = 0;
+    let mut physical_line_start = TextSize::new(0);
     let mut prev_end = TextSize::default();
     let mut prev_token: Option<&TokenKind> = None;
     for token in logical_line.tokens() {
+        let start_physical_line_idx = current_line_idx;
         if matches!(prev_token, Some(TokenKind::NonLogicalNewline)) {
-            non_logical_newlines_indices.push(token.range.start().into());
+            current_line_idx += 1;
+            physical_line_start = token.range.end();
         }
 
         let trivia = locator.slice(TextRange::new(prev_end, token.range.start()));
@@ -61,15 +75,23 @@ fn get_continuation_indices(logical_line: &LogicalLine, locator: &Locator) -> Ve
                 Some(TokenKind::Newline | TokenKind::NonLogicalNewline)
             ) && prev_token.is_some()
             {
-                non_logical_newlines_indices.push(token.range.start().into())
+                current_line_idx += 1;
+                physical_line_start = token.range.start() + TextSize::try_from(index).unwrap();
             }
         }
+
+        token_infos.push(TokenInfo {
+            start_physical_line_idx,
+            end_physical_line_idx: current_line_idx,
+            token_start_within_physical_line: token.range.start() - physical_line_start,
+            token_end_within_physical_line: token.range.end() - physical_line_start,
+        });
 
         prev_token = Some(&token.kind);
         prev_end = token.range.end();
     }
 
-    non_logical_newlines_indices
+    token_infos
 }
 
 /// Because there is no Indent token for continuation lines.
@@ -181,9 +203,11 @@ pub(crate) fn continuation_line_missing_indentation_or_outdented(
     let mut physical_line_start = logical_line.tokens().first().unwrap().range.start();
     let mut prev_end = TextSize::default();
     for token in logical_line.tokens() {
-        // TODO: instead of creating continuation indices, create the start and end of pycodestyle, and then zip it
-        //       to the tokens iterator to get the start_physical_line_idx, end_physical_line_idx,
-        //       token_start_within_physical_line , token_end_within_physical_line.
+        // let newline = row < start[0] - first_row;
+        // if newline {
+        //     row = start[0] - first_row;
+        //     newline = !matches!(token.kind, TokenKind::NonLogicalNewline | TokenKind::Newline);
+        // }
 
         // this is the beginning of a continuation line.
         if continuation_indices.contains(&token.range.start().into()) {
