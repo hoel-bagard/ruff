@@ -36,16 +36,17 @@ impl Violation for MissingOrOutdentedIndentation {
 }
 
 #[derive(Debug)]
-struct TokenInfo {
+struct TokenInfo<'a> {
     start_physical_line_idx: usize,
     end_physical_line_idx: usize,
     token_start_within_physical_line: usize,
     token_end_within_physical_line: usize,
+    line: &'a str,
 }
 
 // For each token, compute its start_physical_line_idx, end_physical_line_idx,
 // token_start_within_physical_line and token_end_within_physical_line the same way pycodestyle does.
-fn get_token_infos(logical_line: &LogicalLine, locator: &Locator) -> Vec<TokenInfo> {
+fn get_token_infos<'a>(logical_line: &'a LogicalLine, locator: &'a Locator) -> Vec<TokenInfo<'a>> {
     let mut token_infos = Vec::new();
     let mut current_line_idx: usize = 0;
     // The first physical line occupied by the token, since a token can span multiple physical lines.
@@ -65,6 +66,7 @@ fn get_token_infos(logical_line: &LogicalLine, locator: &Locator) -> Vec<TokenIn
                     .into(),
                 token_end_within_physical_line: (token.range.end() - first_physical_line_start)
                     .into(),
+                line: locator.slice(TextRange::new(first_physical_line_start, token.range.end())),
             });
 
             current_line_idx += 1;
@@ -74,7 +76,7 @@ fn get_token_infos(logical_line: &LogicalLine, locator: &Locator) -> Vec<TokenIn
 
         // Look for newlines within strings.
         let trivia = locator.slice(TextRange::new(token.range.start(), token.range.end()));
-        for (index, _text) in trivia.match_indices('\n') {
+        for (index, _text) in trivia.match_indices("\n") {
             current_line_idx += 1;
             current_physical_line_start =
                 token.range.start() + TextSize::try_from(index + 1).unwrap();
@@ -87,6 +89,7 @@ fn get_token_infos(logical_line: &LogicalLine, locator: &Locator) -> Vec<TokenIn
                 .into(),
             token_end_within_physical_line: (token.range.end() - current_physical_line_start)
                 .into(),
+            line: locator.slice(TextRange::new(first_physical_line_start, token.range.end())),
         });
         first_physical_line_start = current_physical_line_start;
     }
@@ -194,12 +197,14 @@ pub(crate) fn continuation_line_missing_indentation_or_outdented(
     // For each depth, collect a list of opening rows.
     let mut open_rows = vec![vec![0]];
     // For each depth, memorize the hanging indentation.
-    let mut hangs: Vec<Option<usize>> = Vec::new();
+    let mut hangs: Vec<Option<usize>> = vec![None];
+    let mut hang: usize = 0;
+    let mut hanging_indent: bool = false;
     // Visual indents
     let mut indent_chances: Vec<usize> = Vec::new();
     let mut last_indent = start_indent_level;
-    let visual_indent = false;
-    let last_token_multiline = false;
+    let mut visual_indent = false;
+    let mut last_token_multiline = false;
     // For each depth, memorize the visual indent column.
     let mut indent = vec![last_indent];
 
@@ -210,9 +215,6 @@ pub(crate) fn continuation_line_missing_indentation_or_outdented(
     // Config option: hang closing bracket instead of matching indentation of opening bracket's line.
     let hang_closing = false;
 
-    // To be able to compute the line relative start of a token.
-    let mut physical_line_start = logical_line.tokens().first().unwrap().range.start();
-    let mut prev_end = TextSize::default();
     for (token, token_info) in zip(logical_line.tokens(), token_infos) {
         let mut is_newline = row < token_info.start_physical_line_idx - first_row;
         if is_newline {
@@ -237,8 +239,6 @@ pub(crate) fn continuation_line_missing_indentation_or_outdented(
             );
 
             // Is the indent relative to an opening bracket line?
-            let hanging_indent: bool;
-            let hang: usize;
             for open_row in open_rows[depth].iter().rev() {
                 hang = rel_indent[row] - rel_indent[*open_row];
                 hanging_indent = valid_hangs.contains(&hang);
@@ -257,7 +257,7 @@ pub(crate) fn continuation_line_missing_indentation_or_outdented(
 
             if is_closing_bracket && indent[depth] != 0 {
                 // Closing bracket for visual indent.
-                if token_info.token_start_within_physical_line.into() != indent[depth] {
+                if token_info.token_start_within_physical_line != indent[depth] {
                     // TODO: Raise E124 here.
                 }
             } else if is_closing_bracket && hang == 0 {
@@ -266,7 +266,7 @@ pub(crate) fn continuation_line_missing_indentation_or_outdented(
                     //     // TODO: Raise E133 here.
                 }
             } else if indent[depth] != 0
-                && token_info.token_start_within_physical_line.into() < indent[depth]
+                && token_info.token_start_within_physical_line < indent[depth]
             {
                 // visual indent is broken
                 if !visual_indent {
@@ -329,7 +329,9 @@ pub(crate) fn continuation_line_missing_indentation_or_outdented(
             {
                 indent_chances.push(token_info.token_end_within_physical_line + 1);
             } else if matches!(token.kind, TokenKind::Colon)
-                && colon_is_last_non_space_character_on_the_line
+                && token_info.line[token_info.token_end_within_physical_line..]
+                    .trim()
+                    .is_empty()
             {
                 open_rows[depth].push(row);
             }
@@ -391,15 +393,13 @@ pub(crate) fn continuation_line_missing_indentation_or_outdented(
                 rel_indent[token_info.end_physical_line_idx - first_row] = rel_indent[row]
             }
         }
-        if indent_next && expand_indent(line) == indent_level + indent_size {
+        if indent_next && expand_indent(token_info.line) == indent_level + indent_size {
             if visual_indent {
                 // TODO: Raise 129.
             } else {
                 // TODO: Raise 125.
             }
         }
-
-        prev_end = token.range.end();
     }
 
     // let mut diagnostic = Diagnostic::new(
