@@ -1,13 +1,12 @@
-use std::collections::HashMap;
+use std::iter::zip;
 
-use super::{LogicalLine, LogicalLineToken};
+use super::LogicalLine;
 use crate::checkers::logical_lines::LogicalLinesContext;
 use ruff_diagnostics::Violation;
 use ruff_macros::{derive_message_formats, violation};
-use ruff_python_parser::{Tok, TokenKind};
+use ruff_python_parser::TokenKind;
 use ruff_source_file::Locator;
 use ruff_text_size::{TextRange, TextSize};
-use rustc_hash::FxHashMap;
 
 /// ## What it does
 /// Checks for continuation lines not indented as far as they should be or indented too far.
@@ -40,8 +39,8 @@ impl Violation for MissingOrOutdentedIndentation {
 struct TokenInfo {
     start_physical_line_idx: usize,
     end_physical_line_idx: usize,
-    token_start_within_physical_line: TextSize,
-    token_end_within_physical_line: TextSize,
+    token_start_within_physical_line: usize,
+    token_end_within_physical_line: usize,
 }
 
 // For each token, compute its start_physical_line_idx, end_physical_line_idx,
@@ -62,8 +61,10 @@ fn get_token_infos(logical_line: &LogicalLine, locator: &Locator) -> Vec<TokenIn
             token_infos.push(TokenInfo {
                 start_physical_line_idx,
                 end_physical_line_idx: current_line_idx,
-                token_start_within_physical_line: token.range.start() - first_physical_line_start,
-                token_end_within_physical_line: token.range.end() - first_physical_line_start,
+                token_start_within_physical_line: (token.range.start() - first_physical_line_start)
+                    .into(),
+                token_end_within_physical_line: (token.range.end() - first_physical_line_start)
+                    .into(),
             });
 
             current_line_idx += 1;
@@ -82,8 +83,10 @@ fn get_token_infos(logical_line: &LogicalLine, locator: &Locator) -> Vec<TokenIn
         token_infos.push(TokenInfo {
             start_physical_line_idx,
             end_physical_line_idx: current_line_idx,
-            token_start_within_physical_line: token.range.start() - first_physical_line_start,
-            token_end_within_physical_line: token.range.end() - current_physical_line_start,
+            token_start_within_physical_line: (token.range.start() - first_physical_line_start)
+                .into(),
+            token_end_within_physical_line: (token.range.end() - current_physical_line_start)
+                .into(),
         });
         first_physical_line_start = current_physical_line_start;
     }
@@ -152,16 +155,15 @@ pub(crate) fn continuation_line_missing_indentation_or_outdented(
 ) {
     // dbg!(&logical_line);
     let token_infos = get_token_infos(logical_line, locator);
-    // let nb_physical_lines = token_infos.last().unwrap().end_physical_line_idx + 1; // Plus 1 to count the last newline token / empty lines.
-    let nb_physical_lines = 1;
+    let first_row = token_infos.first().unwrap().start_physical_line_idx;
+    let nb_physical_lines = 1 + token_infos.last().unwrap().start_physical_line_idx - first_row; // The nrows from pycodestyle
     dbg!(&logical_line.text());
     // dbg!(&logical_line.tokens());
-    // dbg!(nb_physical_lines);
+    dbg!(nb_physical_lines);
     dbg!(&token_infos);
     if nb_physical_lines == 1 {
         return;
     }
-    return;
 
     // Indent of the first physical line.
     let start_indent_level = line_indent(
@@ -180,6 +182,11 @@ pub(crate) fn continuation_line_missing_indentation_or_outdented(
 
     let mut row = 0;
     let mut depth = 0;
+    let valid_hangs = if indent_char != '\t' {
+        vec![indent_size]
+    } else {
+        vec![indent_size, indent_size * 2]
+    };
     // Remember how many brackets were opened on each line
     let mut parens = vec![0; nb_physical_lines];
     // Relative indents of physical lines
@@ -189,7 +196,6 @@ pub(crate) fn continuation_line_missing_indentation_or_outdented(
     // # for each depth, memorize the hanging indentation
     let mut hangs: Vec<Option<usize>> = Vec::new();
     // # visual indents
-    // let mut indent_chances: FxHashMap<usize, usize> = FxHashMap::default();
     let mut indent_chances: Vec<usize> = Vec::new();
     let mut last_indent = start_indent_level;
     // visual_indent = None
@@ -201,124 +207,195 @@ pub(crate) fn continuation_line_missing_indentation_or_outdented(
     // To be able to compute the line relative start of a token.
     let mut physical_line_start = logical_line.tokens().first().unwrap().range.start();
     let mut prev_end = TextSize::default();
-    for token in logical_line.tokens() {
-        // let newline = row < start[0] - first_row;
-        // if newline {
-        //     row = start[0] - first_row;
-        //     newline = !matches!(token.kind, TokenKind::NonLogicalNewline | TokenKind::Newline);
-        // }
+    for (token, token_info) in zip(logical_line.tokens(), token_infos) {
+        let mut is_newline = row < token_info.start_physical_line_idx - first_row;
+        if is_newline {
+            row = token_info.start_physical_line_idx - first_row;
+            is_newline = !matches!(
+                token.kind,
+                TokenKind::NonLogicalNewline | TokenKind::Newline
+            );
+        }
 
-        // this is the beginning of a continuation line.
-        // if continuation_indices.contains(&token.range.start().into()) {
-        if true {
-            // record the initial indent.
+        // This is the beginning of a continuation line.
+        if is_newline {
+            let last_indent = token_info.token_start_within_physical_line;
+
+            // Record the initial indent.
             let physical_line_start_text =
                 locator.slice(TextRange::new(prev_end, token.range.start()));
             let indent_level = expand_indent(physical_line_start_text);
             rel_indent[row] = indent_level - start_indent_level;
-            physical_line_start = token.range.start() - TextSize::try_from(indent_level).unwrap();
-            // The start[1] from pycodestyle.
-            let token_start_within_physical_line = token.range.start() - physical_line_start;
-            dbg!(&token);
-            dbg!(token_start_within_physical_line);
 
+            // identify closing bracket
             let is_closing_bracket = matches!(
                 token.kind,
                 TokenKind::Rpar | TokenKind::Rsqb | TokenKind::Rbrace
             );
+
+            // Is the indent relative to an opening bracket line?
+            let hanging_indent: bool;
+            let hang: usize;
+            for open_row in open_rows[depth].iter().rev() {
+                hang = rel_indent[row] - rel_indent[*open_row];
+                hanging_indent = valid_hangs.contains(&hang);
+                if hanging_indent {
+                    break;
+                }
+            }
+            if let Some(depth_hang) = hangs[depth] {
+                hanging_indent = hang == depth_hang;
+            }
+
+            // Is there any chance of visual indent?
+            let visual_indent = !is_closing_bracket
+                && hang > 0
+                && indent_chances.contains(&token_info.token_start_within_physical_line.into());
+
+            if is_closing_bracket && indent[depth] != 0 {
+                // Closing bracket for visual indent.
+                if token_info.token_start_within_physical_line.into() != indent[depth] {
+                    // TODO: Raise E124 here.
+                }
+            } else if is_closing_bracket && hang == 0 {
+                // closing bracket matches indentation of opening bracket's line
+                // if hang_closing {
+                //     // TODO: Raise E133 here.
+                // }
+            } else if indent[depth] != 0
+                && token_info.token_start_within_physical_line.into() < indent[depth]
+            {
+                // visual indent is broken
+                if !visual_indent {
+                    // TODO: Raise E128.
+                }
+            } else if hanging_indent || (indent_next && rel_indent[row] == 2 * indent_size) {
+                // hanging indent is verified
+                if is_closing_bracket && !hang_closing {
+                    // TODO: Raise E123.
+                }
+                hangs[depth] = Some(hang);
+            } else if visual_indent {
+                // Visual indent is verified.
+                indent[depth] = token_info.token_start_within_physical_line.into();
+            } else {
+                // Indent is broken.
+                if hang <= 0 {
+                    // TODO: Raise E122.
+                } else if indent[depth] != 0 {
+                    // TODO: Raise E127.
+                } else if !is_closing_bracket && hangs[depth] != 0 {
+                    // TODO: Raise 131.
+                } else {
+                    hangs[depth] = hang;
+                    if hang > indent_size {
+                        // TODO: Raise 126.
+                    } else {
+                        // TODO: Raise E121.
+                    }
+                }
+            }
+
+            // Look for visual indenting.
+            if parens[row]
+                && !matches!(token.kind, TokenKind::Newline | TokenKind::Comment)
+                && indent[depth] == 0
+            {
+                indent[depth] = token_info.start_physical_line_idx;
+                indent_chances[token_info.token_start_within_physical_line] = true;
+            }
+            // Deal with implicit string concatenation.  // TODO: fstring ?
+            else if matches!(token.kind, TokenKind::String | TokenKind::Comment) {
+                indent_chances[token_info.token_start_within_physical_line] = true;
+            }
+            // Visual indent after assert/raise/with.
+            else if row == 0
+                && depth == 0
+                && matches!(
+                    token.kind,
+                    TokenKind::Assert | TokenKind::Raise | TokenKind::With
+                )
+            {
+                indent_chances[token_info.token_end_within_physical_line + 1] = true;
+            }
+            // Special case for the "if" statement because "if (".len() == 4
+            else if indent_chances.len() == 0
+                && row == 0
+                && depth == 0
+                && matches!(token.kind, TokenKind::If)
+            {
+                indent_chances[token_info.token_end_within_physical_line + 1] = true;
+            } else if matches!(token.kind, TokenKind::Colon)
+                && colon_is_last_non_space_character_on_the_line
+            {
+                open_rows[depth].push(row);
+            }
 
             let is_opening_bracket = matches!(
                 token.kind,
                 TokenKind::Lpar | TokenKind::Lsqb | TokenKind::Lbrace
             );
 
-            if matches!(token.kind, TokenKind::Colon)
-                && matches!(
-                    logical_line.tokens().last().unwrap().kind,
-                    TokenKind::NonLogicalNewline
-                )
-            {
-                open_rows[depth].push(row);
-            }
-
-            // Is there any chance of visual indent?
-            // let visual_indent = !is_closing_bracket
-            //     && hang > 0
-            //     && indent_chances.contains(&token_start_within_physical_line);
-
-            if is_opening_bracket {
-                depth += 1;
-                indent.push(0);
-                hangs.push(None);
-                if open_rows.len() == depth {
-                    open_rows.push(Vec::new());
-                }
-                open_rows[depth].push(row);
-                parens[row] += 1;
-            } else if is_closing_bracket && depth > 0 {
-                // Parent indents should not be more than this one.
-                let prev_indent = if let Some(i) = indent.pop() {
-                    i
-                } else {
-                    last_indent
-                };
-                hangs.pop();
-                for d in 0..depth {
-                    if indent[d] > prev_indent {
-                        indent[d] = 0
+            // Keep track of bracket depth.
+            if is_opening_bracket || is_closing_bracket {
+                if is_opening_bracket {
+                    depth += 1;
+                    indent.push(0);
+                    hangs.push(None);
+                    if open_rows.len() == depth {
+                        open_rows.push(Vec::new());
+                    }
+                    open_rows[depth].push(row);
+                    parens[row] += 1;
+                } else if is_closing_bracket && depth > 0 {
+                    // Parent indents should not be more than this one.
+                    let prev_indent = if let Some(i) = indent.pop() {
+                        i
+                    } else {
+                        last_indent
+                    };
+                    hangs.pop();
+                    for d in 0..depth {
+                        if indent[d] > prev_indent {
+                            indent[d] = 0
+                        }
+                    }
+                    indent_chances = indent_chances
+                        .iter()
+                        .filter(|&&ind| ind < prev_indent)
+                        .collect();
+                    open_rows.truncate(depth);
+                    depth -= 1;
+                    if depth > 0 {
+                        indent_chances[indent[depth]] = true;
+                    }
+                    for idx in (0..row + 1).rev() {
+                        if parens[idx] != 0 {
+                            parens[idx] -= 1;
+                            break;
+                        }
                     }
                 }
-                // for ind in indent
+                if !indent_chances.contains(&token_info.token_start_within_physical_line) {
+                    // Allow lining up tokens
+                    indent_chances.push(token_info.token_start_within_physical_line);
+                }
             }
 
-            // # keep track of bracket depth
-            // if token_type == tokenize.OP:
-            //     if text in '([{':
-            //         depth += 1
-            //         indent.append(0)
-            //         hangs.append(None)
-            //         if len(open_rows) == depth:
-            //             open_rows.append([])
-            //         open_rows[depth].append(row)
-            //         parens[row] += 1
-            //         if verbose >= 4:
-            //             print("bracket depth %s seen, col %s, visual min = %s" %
-            //                   (depth, start[1], indent[depth]))
-            //     elif text in ')]}' and depth > 0:
-            //         # parent indents should not be more than this one
-            //         prev_indent = indent.pop() or last_indent[1]
-            //         hangs.pop()
-            //         for d in range(depth):
-            //             if indent[d] > prev_indent:
-            //                 indent[d] = 0
-            //         for ind in list(indent_chances):
-            //             if ind >= prev_indent:
-            //                 del indent_chances[ind]
-            //         del open_rows[depth + 1:]
-            //         depth -= 1
-            //         if depth:
-            //             indent_chances[indent[depth]] = True
-            //         for idx in range(row, -1, -1):
-            //             if parens[idx]:
-            //                 parens[idx] -= 1
-            //                 break
-            //     assert len(indent) == depth + 1
-            //     if start[1] not in indent_chances:
-            //         # allow lining up tokens
-            //         indent_chances[start[1]] = text
-            // last_indent = line_indent(
-            //     locator,
-            //     indent_char,
-            //     indent_size,
-            //     prev_end,
-            //     token.range.start(),
-            // );
-            // dbg!(&last_indent);
-
-            // last_token_multiline = (start[0] != end[0])
-            // if last_token_multiline:
-            //     rel_indent[end[0] - first_row] = rel_indent[row]
+            last_token_multiline =
+                token_info.start_physical_line_idx != token_info.end_physical_line_idx;
+            if last_token_multiline {
+                rel_indent[token_info.end_physical_line_idx - first_row] = rel_indent[row]
+            }
         }
+        if indent_next && expand_indent(line) == indent_level + indent_size {
+            if visual_indent {
+                // TODO: Raise 129.
+            } else {
+                // TODO: Raise 125.
+            }
+        }
+
         prev_end = token.range.end();
     }
 
