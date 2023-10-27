@@ -297,16 +297,16 @@ pub(crate) fn continuation_line_missing_indentation_or_outdented(
             }
 
             // Look for visual indenting.
-            if parens[row]
+            if parens[row] != 0
                 && !matches!(token.kind, TokenKind::Newline | TokenKind::Comment)
                 && indent[depth] == 0
             {
                 indent[depth] = token_info.start_physical_line_idx;
-                indent_chances[token_info.token_start_within_physical_line] = true;
+                indent_chances.push(token_info.token_start_within_physical_line);
             }
             // Deal with implicit string concatenation.  // TODO: fstring ?
             else if matches!(token.kind, TokenKind::String | TokenKind::Comment) {
-                indent_chances[token_info.token_start_within_physical_line] = true;
+                indent_chances.push(token_info.token_start_within_physical_line);
             }
             // Visual indent after assert/raise/with.
             else if row == 0
@@ -316,7 +316,7 @@ pub(crate) fn continuation_line_missing_indentation_or_outdented(
                     TokenKind::Assert | TokenKind::Raise | TokenKind::With
                 )
             {
-                indent_chances[token_info.token_end_within_physical_line + 1] = true;
+                indent_chances.push(token_info.token_end_within_physical_line + 1);
             }
             // Special case for the "if" statement because "if (".len() == 4
             else if indent_chances.len() == 0
@@ -324,7 +324,7 @@ pub(crate) fn continuation_line_missing_indentation_or_outdented(
                 && depth == 0
                 && matches!(token.kind, TokenKind::If)
             {
-                indent_chances[token_info.token_end_within_physical_line + 1] = true;
+                indent_chances.push(token_info.token_end_within_physical_line + 1);
             } else if matches!(token.kind, TokenKind::Colon)
                 && colon_is_last_non_space_character_on_the_line
             {
@@ -367,7 +367,7 @@ pub(crate) fn continuation_line_missing_indentation_or_outdented(
                     open_rows.truncate(depth);
                     depth -= 1;
                     if depth > 0 {
-                        indent_chances[indent[depth]] = true;
+                        indent_chances.push(indent[depth]);
                     }
                     for idx in (0..row + 1).rev() {
                         if parens[idx] != 0 {
