@@ -187,22 +187,28 @@ pub(crate) fn continuation_line_missing_indentation_or_outdented(
     } else {
         vec![indent_size, indent_size * 2]
     };
-    // Remember how many brackets were opened on each line
+    // Remember how many brackets were opened on each line.
     let mut parens = vec![0; nb_physical_lines];
-    // Relative indents of physical lines
+    // Relative indents of physical lines.
     let mut rel_indent = vec![0; nb_physical_lines];
     // For each depth, collect a list of opening rows.
     let mut open_rows = vec![vec![0]];
-    // # for each depth, memorize the hanging indentation
+    // For each depth, memorize the hanging indentation.
     let mut hangs: Vec<Option<usize>> = Vec::new();
-    // # visual indents
+    // Visual indents
     let mut indent_chances: Vec<usize> = Vec::new();
     let mut last_indent = start_indent_level;
-    // visual_indent = None
+    let visual_indent = false;
     let last_token_multiline = false;
-    // # for each depth, memorize the visual indent column
-    // indent = [last_indent[1]]
+    // For each depth, memorize the visual indent column.
     let mut indent = vec![last_indent];
+
+    // Starting conditions.
+    let physical_line_start_text = locator.slice(logical_line.first_token().unwrap().range);
+    // TODO: Check this one.
+    let indent_level = expand_indent(physical_line_start_text);
+    // Config option: hang closing bracket instead of matching indentation of opening bracket's line.
+    let hang_closing = false;
 
     // To be able to compute the line relative start of a token.
     let mut physical_line_start = logical_line.tokens().first().unwrap().range.start();
@@ -222,9 +228,6 @@ pub(crate) fn continuation_line_missing_indentation_or_outdented(
             let last_indent = token_info.token_start_within_physical_line;
 
             // Record the initial indent.
-            let physical_line_start_text =
-                locator.slice(TextRange::new(prev_end, token.range.start()));
-            let indent_level = expand_indent(physical_line_start_text);
             rel_indent[row] = indent_level - start_indent_level;
 
             // identify closing bracket
@@ -248,7 +251,7 @@ pub(crate) fn continuation_line_missing_indentation_or_outdented(
             }
 
             // Is there any chance of visual indent?
-            let visual_indent = !is_closing_bracket
+            visual_indent = !is_closing_bracket
                 && hang > 0
                 && indent_chances.contains(&token_info.token_start_within_physical_line.into());
 
@@ -258,10 +261,10 @@ pub(crate) fn continuation_line_missing_indentation_or_outdented(
                     // TODO: Raise E124 here.
                 }
             } else if is_closing_bracket && hang == 0 {
-                // closing bracket matches indentation of opening bracket's line
-                // if hang_closing {
-                //     // TODO: Raise E133 here.
-                // }
+                // Closing bracket matches indentation of opening bracket's line
+                if hang_closing {
+                    //     // TODO: Raise E133 here.
+                }
             } else if indent[depth] != 0
                 && token_info.token_start_within_physical_line.into() < indent[depth]
             {
@@ -284,10 +287,10 @@ pub(crate) fn continuation_line_missing_indentation_or_outdented(
                     // TODO: Raise E122.
                 } else if indent[depth] != 0 {
                     // TODO: Raise E127.
-                } else if !is_closing_bracket && hangs[depth] != 0 {
+                } else if !is_closing_bracket && hangs[depth].is_some_and(|hang| hang > 0) {
                     // TODO: Raise 131.
                 } else {
-                    hangs[depth] = hang;
+                    hangs[depth] = Some(hang);
                     if hang > indent_size {
                         // TODO: Raise 126.
                     } else {
@@ -361,8 +364,8 @@ pub(crate) fn continuation_line_missing_indentation_or_outdented(
                         }
                     }
                     indent_chances = indent_chances
-                        .iter()
-                        .filter(|&&ind| ind < prev_indent)
+                        .into_iter()
+                        .filter(|&ind| ind < prev_indent)
                         .collect();
                     open_rows.truncate(depth);
                     depth -= 1;
