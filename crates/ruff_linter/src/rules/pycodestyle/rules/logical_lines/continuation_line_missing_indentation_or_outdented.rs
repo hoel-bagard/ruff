@@ -46,7 +46,7 @@ struct TokenInfo<'a> {
 
 // For each token, compute its start_physical_line_idx, end_physical_line_idx,
 // token_start_within_physical_line and token_end_within_physical_line the same way pycodestyle does.
-fn get_token_infos<'a>(logical_line: &'a LogicalLine, locator: &'a Locator) -> Vec<TokenInfo<'a>> {
+fn get_token_infos<'a>(logical_line: &LogicalLine, locator: &'a Locator) -> Vec<TokenInfo<'a>> {
     let mut token_infos = Vec::new();
     let mut current_line_idx: usize = 0;
     // The first physical line occupied by the token, since a token can span multiple physical lines.
@@ -55,31 +55,18 @@ fn get_token_infos<'a>(logical_line: &'a LogicalLine, locator: &'a Locator) -> V
     for token in logical_line.tokens() {
         let start_physical_line_idx = current_line_idx;
         current_physical_line_start = first_physical_line_start;
-        if matches!(
+
+        if !matches!(
             token.kind,
             TokenKind::NonLogicalNewline | TokenKind::Newline
         ) {
-            token_infos.push(TokenInfo {
-                start_physical_line_idx,
-                end_physical_line_idx: current_line_idx,
-                token_start_within_physical_line: (token.range.start() - first_physical_line_start)
-                    .into(),
-                token_end_within_physical_line: (token.range.end() - first_physical_line_start)
-                    .into(),
-                line: locator.slice(TextRange::new(first_physical_line_start, token.range.end())),
-            });
-
-            current_line_idx += 1;
-            first_physical_line_start = token.range.end();
-            continue;
-        }
-
-        // Look for newlines within strings.
-        let trivia = locator.slice(TextRange::new(token.range.start(), token.range.end()));
-        for (index, _text) in trivia.match_indices("\n") {
-            current_line_idx += 1;
-            current_physical_line_start =
-                token.range.start() + TextSize::try_from(index + 1).unwrap();
+            // Look for newlines within strings.
+            let trivia = locator.slice(TextRange::new(token.range.start(), token.range.end()));
+            for (index, _text) in trivia.match_indices("\n") {
+                current_line_idx += 1;
+                current_physical_line_start =
+                    token.range.start() + TextSize::try_from(index + 1).unwrap();
+            }
         }
 
         token_infos.push(TokenInfo {
@@ -89,9 +76,18 @@ fn get_token_infos<'a>(logical_line: &'a LogicalLine, locator: &'a Locator) -> V
                 .into(),
             token_end_within_physical_line: (token.range.end() - current_physical_line_start)
                 .into(),
-            line: locator.slice(TextRange::new(first_physical_line_start, token.range.end())),
+            line: locator.slice(locator.full_lines_range(token.range)),
         });
-        first_physical_line_start = current_physical_line_start;
+
+        if matches!(
+            token.kind,
+            TokenKind::NonLogicalNewline | TokenKind::Newline
+        ) {
+            current_line_idx += 1;
+            first_physical_line_start = token.range.end();
+        } else {
+            first_physical_line_start = current_physical_line_start;
+        }
     }
 
     token_infos
